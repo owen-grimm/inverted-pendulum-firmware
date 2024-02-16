@@ -33,7 +33,8 @@ class QuadratureEncoder {
         void operator=(QuadratureEncoder const&)    = delete;
 
         AngleType getAngle();
-        AngleType pollAngularVelocity(uint32_t poll_duration);
+        AngleType getAngularVelocity() { return this->angular_velocity; };
+        void updateAngularVelocity();
 
         void resetAngleReference(AngleType cur_angle = 0);
 
@@ -46,6 +47,10 @@ class QuadratureEncoder {
 
     protected:
         QuadratureEncoder();
+
+        AngleType angular_velocity;
+        AngleType pre_vel_meas_angle;   // Angle at previous vel measurement
+        uint32_t  pre_vel_meas_time;    // Time (us) at previous vel measurement
 
         uint16_t ppr;
         long double epr; // Double so we don't have to convert frequently

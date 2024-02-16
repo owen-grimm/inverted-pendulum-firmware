@@ -3,17 +3,23 @@
 
 /* ============= CONFIG HERE ============= */
 
+/* Connection Parameters */
 #define ENCODER_SIGNAL_A_PIN 2
 #define ENCODER_SIGNAL_A_INT_VECTOR INT0_vect
 #define ENCODER_SIGNAL_B_PIN 3
 #define ENCODER_SIGNAL_B_INT_VECTOR INT1_vect
 #define ENCODER_SIGNAL_IN_PORT PIND
 #define ENCODER_PULSES_PER_REVOLUTION 3600
+/* Velocity collection parameters */
+#define ENCODER_VEL_PRESCALE_BITS 0b00000100    // 1/1024 prescale, ~1kHz
 
 /* ======================================= */
 
 // Don't change these ones tho...
-#define EDGES_PER_PULSE 2
+#define ENCODER_EDGES_PER_PULSE 2
+#define ENCODER_MICROS_PER_SEC 1000000
+
+#define ENCODER_TCCR2B_PRESCL_MSK 0b11111000
 
 // Unfortunately, because there's no good way to grab pin ports registers,
 // check their interrupt vectors, or generate ISRs (without Arduino's high-
@@ -36,7 +42,7 @@
     #error "Signal B pin must be interrupt-enabled."
 #endif
 
-#define ISR_COMPILABLE
+#define PULSE_ISR_COMPILABLE
 
 #else
 
@@ -117,7 +123,7 @@
 */
 QuadratureEncoder::QuadratureEncoder() {
     this->ppr = ENCODER_PULSES_PER_REVOLUTION;
-    this->epr = (double) (this->ppr * EDGES_PER_PULSE);
+    this->epr = (double) (this->ppr * ENCODER_EDGES_PER_PULSE);
     this->pulses = 0;
 
     uint8_t pin_a_bm = digital_pin_to_bit_mask_PGM[ENCODER_SIGNAL_A_PIN];
@@ -145,6 +151,10 @@ QuadratureEncoder::QuadratureEncoder() {
         // See documentation for EICRA and EIMSK registers to learn more
         EICRA = 0b00000101;     // Setting int0 and int1 to on-change trigger
         EIMSK = 0b00000011;     // Enabling int0 and int1
+
+        // Setting up timer2 for velocity interrupt
+        TCCR2B = (TCCR2B & ENCODER_TCCR2B_PRESCL_MSK) | ENCODER_VEL_PRESCALE_BITS;
+        TIMSK2 = TIMSK2 | 0b00000001;
     #else
         #error "Unsupported MCU. Only the ATmega328p is currently supported"
     #endif
@@ -164,30 +174,6 @@ QuadratureEncoder::AngleType QuadratureEncoder::getAngle() {
 };
 
 /**
- * \brief Gets the average angular velocity (in ?? TODO:Figure out units) of the
- * encoder over the specified duration.
- * 
- * @param poll_duration Duration over which to find the average angular 
- * velocity, in milliseconds.
- * 
- * A blocking function which finds the average velocity by taking the initial
- * angle, 
-*/
-QuadratureEncoder::AngleType QuadratureEncoder::pollAngularVelocity(
-    uint32_t poll_duration
-) {
-    // Getting initial pos
-    QuadratureEncoder::AngleType angle_initial = this->getAngle();
-    // Waiting
-    delay(poll_duration);
-    // Getting final pos
-    QuadratureEncoder::AngleType angle_final = this->getAngle();
-
-    // Calculating average velocity
-    return (angle_final - angle_initial) / (poll_duration / 1000.0);
-}
-
-/**
  * \brief Resets the 0 reference angle.
  * 
  * @param cur_angle The current angle of the encoder with respect to the new
@@ -203,7 +189,41 @@ void QuadratureEncoder::resetAngleReference(
     this->pulses = (int32_t) (cur_angle * this->epr);
 }
 
-#ifdef ISR_COMPILABLE
+/**
+ * \brief Updates the estimated angular velocity, in fractional rotations per
+ * second, based on the present angle and the angle when this method was
+ * previously called.
+ * 
+ * This function updates the estimated angular velocity of the encoder based on
+ * the angle at the time of the function call and the angle at the time of the
+ * previous function call. To ensure the average velocity calculated by this 
+ * method is a good approximation of the instantaneous velocity, it should be
+ * called frequently and regularly.
+ * 
+ * This function should be kept as LIGHT AS POSSIBLE since it will be run in
+ * an ISR.
+*/
+void QuadratureEncoder::updateAngularVelocity() {
+    // TODO: Use smoothing here? It might help in cases where velocity is
+    // constrained by resolution of double and jumps up and down a bunch.
+
+    QuadratureEncoder::AngleType cur_angle = this->getAngle();
+    uint32_t cur_time = micros();
+
+    // TODO: Check assumption, is there a better way to estimate instantaneous
+    // velocity? Is this even a good/well founded way (i think so lol) to
+    // estimate angular velocity? Perhaps something that incorporates our model 
+    // of the pendulum will work better?
+    this->angular_velocity = ENCODER_MICROS_PER_SEC * (cur_angle - pre_vel_meas_angle) /
+                             (double)(cur_time - pre_vel_meas_time);
+
+    this->pre_vel_meas_angle = cur_angle;
+    this->pre_vel_meas_time = cur_time;
+
+    // return this->angular_velocity;
+}
+
+#ifdef PULSE_ISR_COMPILABLE
 /* To determine the direction of motion when a pulse starts or ends, we can
  * consult the following truth tables:
  * On change in A:
@@ -250,3 +270,8 @@ ISR(ENCODER_SIGNAL_B_INT_VECTOR) {
 }
 
 #endif
+
+// ISR For velocity collection using timer2
+ISR(TIMER2_OVF_vect) {
+    __QuadratureEncoderISRData::encoder.updateAngularVelocity();
+}
