@@ -4,13 +4,14 @@
 // See `define`s at top of file for configuration
 #include "QuadratureEncoder.hpp"
 
-#define LOOP_MIN_PERIOD 20   // In ms
+#define LOOP_MIN_PERIOD 0   // In ms
 #define COMM_BAURD_RATE 115200
 
 QuadratureEncoder& encoder = QuadratureEncoder::getInstance();
 
 void setup() {
   Serial.begin(COMM_BAURD_RATE);
+  encoder.setupRegisters();
 }
 
 // Smoothing
@@ -29,7 +30,7 @@ void loop() {
   Serial.print(">angle:");
   Serial.println(cur_angle, 10);
   Serial.print(">rawvel:");
-  Serial.println(vel);
+  Serial.println(vel, 10);
   // Serial.print(">smoothvel:");
   // Serial.println(smoothed_vel);
   // Serial.print(">frametime:");
