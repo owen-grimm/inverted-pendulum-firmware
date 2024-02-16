@@ -28,6 +28,8 @@ class QuadratureEncoder {
             return instance;
         };
 
+        void setupRegisters();
+
         // Deleting the copy and assignment operators so no accidental instances
         QuadratureEncoder(QuadratureEncoder const&) = delete;
         void operator=(QuadratureEncoder const&)    = delete;
@@ -48,12 +50,11 @@ class QuadratureEncoder {
     protected:
         QuadratureEncoder();
 
-        AngleType angular_velocity;
-        AngleType pre_vel_meas_angle;   // Angle at previous vel measurement
-        uint32_t  pre_vel_meas_time;    // Time (us) at previous vel measurement
+        volatile AngleType angular_velocity;
+        volatile AngleType pre_vel_meas_angle;   // Angle at previous vel measurement
 
         uint16_t ppr;
-        long double epr; // Double so we don't have to convert frequently
+        double epr; // Double so we don't have to convert frequently
         volatile int32_t pulses;
 };
 

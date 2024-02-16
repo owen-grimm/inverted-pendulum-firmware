@@ -11,15 +11,32 @@
 #define ENCODER_SIGNAL_IN_PORT PIND
 #define ENCODER_PULSES_PER_REVOLUTION 3600
 /* Velocity collection parameters */
-#define ENCODER_VEL_PRESCALE_BITS 0b00000100    // 1/1024 prescale, ~1kHz
+#define ENCODER_VEL_PRESCALE_BITS 0b00000110    // 1/1024 prescale, ~240Hz
 
 /* ======================================= */
 
 // Don't change these ones tho...
 #define ENCODER_EDGES_PER_PULSE 2
-#define ENCODER_MICROS_PER_SEC 1000000
+const double ENCODER_MICROS_PER_SEC = 1000000.0;
 
-#define ENCODER_TCCR2B_PRESCL_MSK 0b11111000
+// Getting freq from prescale value, this is messy
+#if     ENCODER_VEL_PRESCALE_BITS == 0b00000001
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 1
+#elif   ENCODER_VEL_PRESCALE_BITS == 0b00000010
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 8
+#elif   ENCODER_VEL_PRESCALE_BITS == 0b00000011
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 32
+#elif   ENCODER_VEL_PRESCALE_BITS == 0b00000100
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 64
+#elif   ENCODER_VEL_PRESCALE_BITS == 0b00000101
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 128
+#elif   ENCODER_VEL_PRESCALE_BITS == 0b00000110
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 256
+#elif   ENCODER_VEL_PRESCALE_BITS == 0b00000111
+    #define ENCODER_VEL_MEAS_FREQ (16000000.0 / 256) / 1024
+#else
+    #error "Invalid `ENCODER_VEL_PRESCALE_BITS` value."
+#endif
 
 // Unfortunately, because there's no good way to grab pin ports registers,
 // check their interrupt vectors, or generate ISRs (without Arduino's high-
@@ -140,8 +157,20 @@ QuadratureEncoder::QuadratureEncoder() {
         this->pin_y_bm = pin_b_bm;
     }
 
-    // This is an extraoirdinarily hacky way to do this but I just want to get
-    // this library up and running tbh
+    this->setupRegisters();
+
+    // Using Arduino's slow `pinMode()` here is fine since this constructor will
+    // only be called once
+    pinMode(ENCODER_SIGNAL_A_PIN, INPUT_PULLUP);
+    pinMode(ENCODER_SIGNAL_B_PIN, INPUT_PULLUP);
+
+}
+
+/**
+ * Arduino sets up some registers for its own nefarious purposes...
+ * This is how I'm fighting it
+*/
+void QuadratureEncoder::setupRegisters() {
     #ifdef __AVR_ATmega328P__
         // Since there are only two interrupt-enabled GPIO pins on the
         // ATmega328p, it is "safe" to assume that both are being used by this
@@ -153,24 +182,20 @@ QuadratureEncoder::QuadratureEncoder() {
         EIMSK = 0b00000011;     // Enabling int0 and int1
 
         // Setting up timer2 for velocity interrupt
-        TCCR2B = (TCCR2B & ENCODER_TCCR2B_PRESCL_MSK) | ENCODER_VEL_PRESCALE_BITS;
-        TIMSK2 = TIMSK2 | 0b00000001;
+        TCCR2A  = 0b00000000;
+        TCCR2B  = 0b00000000 | ENCODER_VEL_PRESCALE_BITS;
+        GTCCR  |= 0b00000010;
+        TIMSK2 |= 0b00000001;
     #else
         #error "Unsupported MCU. Only the ATmega328p is currently supported"
     #endif
-
-    // Using Arduino's slow `pinMode()` here is fine since this constructor will
-    // only be called once
-    pinMode(ENCODER_SIGNAL_A_PIN, INPUT_PULLUP);
-    pinMode(ENCODER_SIGNAL_B_PIN, INPUT_PULLUP);
-
 }
 
 /**
  * Gets the current reported angle of the encoder in fractional rotations.
 */
 QuadratureEncoder::AngleType QuadratureEncoder::getAngle() {
-    return this->pulses / (this->epr);
+    return this->pulses / this->epr;
 };
 
 /**
@@ -187,6 +212,7 @@ void QuadratureEncoder::resetAngleReference(
     QuadratureEncoder::AngleType cur_angle
 ) {
     this->pulses = (int32_t) (cur_angle * this->epr);
+    this->pre_vel_meas_angle = this->pulses;    // Prevent a wild jump on vel
 }
 
 /**
@@ -206,21 +232,18 @@ void QuadratureEncoder::resetAngleReference(
 void QuadratureEncoder::updateAngularVelocity() {
     // TODO: Use smoothing here? It might help in cases where velocity is
     // constrained by resolution of double and jumps up and down a bunch.
-
     QuadratureEncoder::AngleType cur_angle = this->getAngle();
-    uint32_t cur_time = micros();
 
     // TODO: Check assumption, is there a better way to estimate instantaneous
     // velocity? Is this even a good/well founded way (i think so lol) to
     // estimate angular velocity? Perhaps something that incorporates our model 
     // of the pendulum will work better?
-    this->angular_velocity = ENCODER_MICROS_PER_SEC * (cur_angle - pre_vel_meas_angle) /
-                             (double)(cur_time - pre_vel_meas_time);
+    // Using measurement frequency since its safe to assume our timer operates
+    // with little jitter.
+    this->angular_velocity = ENCODER_VEL_MEAS_FREQ * 
+                             (cur_angle - pre_vel_meas_angle);
 
     this->pre_vel_meas_angle = cur_angle;
-    this->pre_vel_meas_time = cur_time;
-
-    // return this->angular_velocity;
 }
 
 #ifdef PULSE_ISR_COMPILABLE
